@@ -1,0 +1,7 @@
+enigma-nms-logging-host_deletion/
+*.retry
+*.log
+.vault_pass.txt
+backups/
+reports/
+group_vars/all/secrets.yml

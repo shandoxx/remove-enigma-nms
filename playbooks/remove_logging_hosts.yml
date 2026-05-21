@@ -1,0 +1,47 @@
+---
+- name: Remove deprecated logging hosts from Cisco access switches
+  hosts: cisco_access_switches
+  gather_facts: false
+
+  tasks:
+    - name: Collect existing logging host config
+      cisco.ios.ios_command:
+        commands:
+          - show running-config | include ^logging host
+      register: logging_config_before
+
+    - name: Show current matching logging hosts before change
+      ansible.builtin.debug:
+        msg: "{{ logging_config_before.stdout[0].splitlines() | select('search', item) | list }}"
+      loop: "{{ logging_hosts_to_remove }}"
+
+    - name: Remove unwanted logging host entries
+      cisco.ios.ios_config:
+        lines:
+          - "no logging host {{ item }}"
+        backup: true
+        backup_options:
+          dir_path: backups
+          filename: "{{ inventory_hostname }}-before-logging-host-removal.cfg"
+      loop: "{{ logging_hosts_to_remove }}"
+      register: remove_logging_hosts_result
+
+    - name: Save running config to startup config
+      cisco.ios.ios_config:
+        save_when: modified
+
+    - name: Verify logging host config after change
+      cisco.ios.ios_command:
+        commands:
+          - show running-config | include ^logging host
+      register: logging_config_after
+
+    - name: Fail if unwanted logging hosts still exist
+      ansible.builtin.fail:
+        msg: "FAILED: {{ inventory_hostname }} still has logging host {{ item }}"
+      when: logging_config_after.stdout[0] is search(item)
+      loop: "{{ logging_hosts_to_remove }}"
+
+    - name: Show final logging host config
+      ansible.builtin.debug:
+        var: logging_config_after.stdout_lines[0]

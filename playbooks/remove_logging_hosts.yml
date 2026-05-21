@@ -3,6 +3,9 @@
   hosts: cisco_access_switches
   gather_facts: false
 
+  vars_files:
+    - ../group_vars/all/vault.yml
+
   vars:
     logging_hosts_to_remove:
       - 10.10.70.100
@@ -22,7 +25,7 @@
       ansible.builtin.file:
         path: "{{ item }}"
         state: directory
-        mode: '0755'
+        mode: '2775'
       delegate_to: localhost
       loop:
         - "{{ report_root }}"
@@ -58,6 +61,7 @@
       ansible.builtin.debug:
         msg: "{{ logging_config_before.stdout[0].splitlines() | select('search', item) | list }}"
       loop: "{{ logging_hosts_to_remove }}"
+      when: not ansible_check_mode
 
     - name: Remove unwanted logging host entries only if present
       cisco.ios.ios_config:
@@ -96,11 +100,12 @@
         dest: "{{ backup_root }}/{{ inventory_hostname }}-logging-after-{{ report_timestamp }}.txt"
         mode: '0644'
       delegate_to: localhost
-
     - name: Fail if unwanted logging hosts still exist
       ansible.builtin.fail:
         msg: "FAILED: {{ inventory_hostname }} still has logging host {{ item }}"
-      when: logging_config_after.stdout[0] is search(item)
+      when:
+        - not ansible_check_mode
+        - item in after_logging.stdout[0]
       loop: "{{ logging_hosts_to_remove }}"
 
     - name: Create per-host report data

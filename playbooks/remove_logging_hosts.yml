@@ -1,28 +1,69 @@
 ---
-- name: Remove deprecated logging hosts from Cisco access switches
+- name: Remove deprecated logging hosts from Cisco access switches with before/after report
   hosts: cisco_access_switches
   gather_facts: false
 
+  vars:
+    logging_hosts_to_remove:
+      - 10.10.70.100
+      - 10.10.60.100
+
+    report_root: "{{ playbook_dir }}/../reports"
+    backup_root: "{{ playbook_dir }}/../backups"
+    report_timestamp: "{{ lookup('pipe', 'date +%Y-%m-%d_%H-%M-%S') }}"
+    send_email_report: false
+
+    email_to: shannon.sariman@kinabank.com.pg
+    email_from: ansible-ip-automation@kinabank.com.pg
+    email_subject: "Cisco Logging Host Removal Report - {{ report_timestamp }}"
+
   tasks:
-    - name: Collect existing logging host config
+    - name: Ensure local report directories exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      loop:
+        - "{{ report_root }}"
+        - "{{ backup_root }}"
+
+    - name: Capture full running config BEFORE change
       cisco.ios.ios_command:
         commands:
-          - show running-config | include ^logging host
+          - show running-config
+      register: running_config_before
+
+    - name: Capture logging hosts BEFORE change
+      cisco.ios.ios_command:
+        commands:
+          - show running-config | include logging
       register: logging_config_before
+
+    - name: Save full running config BEFORE change locally
+      ansible.builtin.copy:
+        content: "{{ running_config_before.stdout[0] }}"
+        dest: "{{ backup_root }}/{{ inventory_hostname }}-before-{{ report_timestamp }}.cfg"
+        mode: '0644'
+      delegate_to: localhost
+
+    - name: Save logging snapshot BEFORE change locally
+      ansible.builtin.copy:
+        content: "{{ logging_config_before.stdout[0] | default('') }}"
+        dest: "{{ backup_root }}/{{ inventory_hostname }}-logging-before-{{ report_timestamp }}.txt"
+        mode: '0644'
+      delegate_to: localhost
 
     - name: Show current matching logging hosts before change
       ansible.builtin.debug:
         msg: "{{ logging_config_before.stdout[0].splitlines() | select('search', item) | list }}"
       loop: "{{ logging_hosts_to_remove }}"
 
-    - name: Remove unwanted logging host entries
+    - name: Remove unwanted logging host entries only if present
       cisco.ios.ios_config:
         lines:
           - "no logging host {{ item }}"
-        backup: true
-        backup_options:
-          dir_path: backups
-          filename: "{{ inventory_hostname }}-before-logging-host-removal.cfg"
+      when: logging_config_before.stdout[0] is search(item)
       loop: "{{ logging_hosts_to_remove }}"
       register: remove_logging_hosts_result
 
@@ -30,11 +71,31 @@
       cisco.ios.ios_config:
         save_when: modified
 
-    - name: Verify logging host config after change
+    - name: Capture full running config AFTER change
       cisco.ios.ios_command:
         commands:
-          - show running-config | include ^logging host
+          - show running-config
+      register: running_config_after
+
+    - name: Capture logging hosts AFTER change
+      cisco.ios.ios_command:
+        commands:
+          - show running-config | include logging
       register: logging_config_after
+
+    - name: Save full running config AFTER change locally
+      ansible.builtin.copy:
+        content: "{{ running_config_after.stdout[0] }}"
+        dest: "{{ backup_root }}/{{ inventory_hostname }}-after-{{ report_timestamp }}.cfg"
+        mode: '0644'
+      delegate_to: localhost
+
+    - name: Save logging snapshot AFTER change locally
+      ansible.builtin.copy:
+        content: "{{ logging_config_after.stdout[0] | default('') }}"
+        dest: "{{ backup_root }}/{{ inventory_hostname }}-logging-after-{{ report_timestamp }}.txt"
+        mode: '0644'
+      delegate_to: localhost
 
     - name: Fail if unwanted logging hosts still exist
       ansible.builtin.fail:
@@ -42,6 +103,66 @@
       when: logging_config_after.stdout[0] is search(item)
       loop: "{{ logging_hosts_to_remove }}"
 
-    - name: Show final logging host config
-      ansible.builtin.debug:
-        var: logging_config_after.stdout_lines[0]
+    - name: Create per-host report data
+      ansible.builtin.copy:
+        dest: "{{ report_root }}/{{ inventory_hostname }}-report-data-{{ report_timestamp }}.yml"
+        mode: '0644'
+        content: |
+          hostname: "{{ inventory_hostname }}"
+          ansible_host: "{{ ansible_host }}"
+          timestamp: "{{ report_timestamp }}"
+          removed_targets:
+          {% for ip in logging_hosts_to_remove %}
+            - "{{ ip }}"
+          {% endfor %}
+          before_logging:
+          {% for line in logging_config_before.stdout[0].splitlines() %}
+            - "{{ line }}"
+          {% endfor %}
+          after_logging:
+          {% for line in logging_config_after.stdout[0].splitlines() %}
+            - "{{ line }}"
+          {% endfor %}
+          before_config_file: "{{ backup_root }}/{{ inventory_hostname }}-before-{{ report_timestamp }}.cfg"
+          after_config_file: "{{ backup_root }}/{{ inventory_hostname }}-after-{{ report_timestamp }}.cfg"
+      delegate_to: localhost
+
+    - name: Generate HTML and PDF report
+      ansible.builtin.command:
+        cmd: >
+          python3 scripts/generate_logging_report.py
+          --host {{ inventory_hostname }}
+          --ip {{ ansible_host }}
+          --timestamp {{ report_timestamp }}
+          --before "{{ backup_root }}/{{ inventory_hostname }}-logging-before-{{ report_timestamp }}.txt"
+          --after "{{ backup_root }}/{{ inventory_hostname }}-logging-after-{{ report_timestamp }}.txt"
+          --before-full "{{ backup_root }}/{{ inventory_hostname }}-before-{{ report_timestamp }}.cfg"
+          --after-full "{{ backup_root }}/{{ inventory_hostname }}-after-{{ report_timestamp }}.cfg"
+          --html "{{ report_root }}/{{ inventory_hostname }}-logging-report-{{ report_timestamp }}.html"
+          --pdf "{{ report_root }}/{{ inventory_hostname }}-logging-report-{{ report_timestamp }}.pdf"
+      delegate_to: localhost
+
+    - name: Send email report with PDF attachment
+      ansible.builtin.shell: |
+        {
+          echo "From: {{ email_from }}"
+          echo "To: {{ email_to }}"
+          echo "Subject: {{ email_subject }}"
+          echo "MIME-Version: 1.0"
+          echo "Content-Type: multipart/mixed; boundary=REPORTBOUNDARY"
+          echo
+          echo "--REPORTBOUNDARY"
+          echo "Content-Type: text/html"
+          echo
+          cat "{{ report_root }}/{{ inventory_hostname }}-logging-report-{{ report_timestamp }}.html"
+          echo
+          echo "--REPORTBOUNDARY"
+          echo "Content-Type: application/pdf; name={{ inventory_hostname }}-logging-report-{{ report_timestamp }}.pdf"
+          echo "Content-Transfer-Encoding: base64"
+          echo "Content-Disposition: attachment; filename={{ inventory_hostname }}-logging-report-{{ report_timestamp }}.pdf"
+          echo
+          base64 "{{ report_root }}/{{ inventory_hostname }}-logging-report-{{ report_timestamp }}.pdf"
+          echo "--REPORTBOUNDARY--"
+        } | msmtp "{{ email_to }}"
+      when: send_email_report | bool
+      delegate_to: localhost

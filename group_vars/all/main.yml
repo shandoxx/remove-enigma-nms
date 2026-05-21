@@ -1,9 +1,0 @@
----
-ansible_connection: ansible.netcommon.network_cli
-ansible_network_os: cisco.ios.ios
-ansible_user: "{{ vault_ansible_user }}"
-ansible_password: "{{ vault_ansible_password }}"
-
-logging_hosts_to_remove:
-  - 10.10.70.100
-  - 10.10.60.100

@@ -1,2 +1,4 @@
 ansible
 ansible-pylibssh
+paramiko==2.12.0
+reportlab

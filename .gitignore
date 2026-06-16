@@ -1,8 +1,10 @@
-enigma-nms-logging-host_deletion/
-*.retry
-*.log
-.vault_pass.txt
 backups/
-reports/
 disabled/
+enigma-nms-logging-host_deletion/
+group_vars/
 group_vars/all.yml
+inventory/zabbix/
+*.log
+reports/
+*.retry
+.vault_pass.txt
